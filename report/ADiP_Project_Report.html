@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ADiP Project Report</title>
+<style>
+  @page { size: A4; margin: 18mm 17mm 18mm 17mm; }
+  body { font-family: "Segoe UI", Calibri, Arial, sans-serif; font-size: 10.3pt; line-height: 1.45; color: #1f2328; margin: 0; }
+  h1 { font-size: 22pt; margin: 0 0 4pt; line-height: 1.2; }
+  h2 { font-size: 13.5pt; margin: 18pt 0 6pt; padding-bottom: 3pt; border-bottom: 1.5px solid #2f6fd0; color: #16325c; page-break-after: avoid; }
+  p { margin: 0 0 7pt; }
+  .subtitle { font-size: 12pt; color: #4a5260; margin-bottom: 2pt; }
+  .meta { color: #5f6368; font-size: 9.5pt; margin-bottom: 14pt; }
+  .abstract { background: #f3f6fb; border-left: 3px solid #2f6fd0; padding: 8pt 11pt; margin-bottom: 4pt; }
+  .abstract h2 { border: 0; margin-top: 0; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 5pt 0 10pt; font-size: 9.2pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #c9ced6; padding: 3.5pt 6pt; text-align: left; vertical-align: top; }
+  th { background: #e9eef6; font-weight: 600; }
+  td.n, th.n { text-align: right; }
+  code { font-family: Consolas, "Courier New", monospace; font-size: 8.9pt; background: #f1f3f5; padding: 0 2pt; border-radius: 2px; }
+  ol, ul { margin: 0 0 8pt 18pt; padding: 0; }
+  li { margin-bottom: 2pt; }
+  .formula { text-align: center; font-family: "Cambria Math", Cambria, serif; font-size: 12pt; margin: 6pt 0 9pt; }
+  figure { margin: 8pt 0 12pt; page-break-inside: avoid; text-align: center; }
+  figure img { max-width: 100%; border: 1px solid #d5d9de; }
+  figcaption { font-size: 8.8pt; color: #5f6368; margin-top: 4pt; }
+  .keep { page-break-inside: avoid; }
+  .pb { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<h1>ADiP Adaptive-Precision Systolic Array on Tang Nano 9K</h1>
+<div class="subtitle">Project Report</div>
+<div class="meta">19 October 2026 &nbsp;·&nbsp; Platform: Sipeed Tang Nano 9K (Gowin GW1NR-9) &nbsp;·&nbsp; Open-source FPGA flow (Yosys, nextpnr, openFPGALoader)</div>
+
+<div class="abstract">
+<h2>Abstract</h2>
+<p>A 4 x 4 adaptive-precision (ADiP-style) systolic array for matrix multiplication was designed in Verilog and runs on a Sipeed Tang Nano 9K FPGA (Gowin GW1NR-9). Each processing element (PE) is built from sixteen 2-bit x 2-bit multipliers. The same hardware computes 8b x 8b, 8b x 4b or 8b x 2b products, unsigned or signed INT8, so lower weight precision gives more results per clock.</p>
+<p>On the board, every mode returns C = A x B that matches a Python reference bit for bit. One run takes 28 clock cycles (1.04 µs at 27 MHz). Throughput rises from 2.29 to 9.14 multiply-accumulates (MAC) per cycle as the weight precision drops from 8 to 2 bits. The design uses 8230 of 8640 LUTs (95%) and closes timing at 69.6 MHz.</p>
+<p>A laptop application sends matrices over USB-UART, checks every result, scales the problem to 8 x 8 and 16 x 16 matrices by tiling, and animates the calculation cycle by cycle.</p>
+</div>
+
+<h2>1. Introduction and objectives</h2>
+<p>Neural-network inference is dominated by matrix multiplication, and quantized models store weights as 8-, 4- or even 2-bit integers. A fixed 8 x 8-bit multiplier wastes hardware when the weights are narrower. ADiP-style adaptive precision splits every multiplier into 2-bit pieces, so one array serves all three precisions and packs more weights per word as precision falls.</p>
+<p>Objectives of this project:</p>
+<ol>
+  <li>Design a reconfigurable PE from 2-bit x 2-bit multipliers that supports 8b x 8b, 8b x 4b and 8b x 2b modes.</li>
+  <li>Build a 4 x 4 weight-stationary systolic array with a controller, input/weight/output memories and shared shifters.</li>
+  <li>Add signed INT8 (two's complement) arithmetic alongside unsigned.</li>
+  <li>Verify in simulation against a golden model, then implement on the Tang Nano 9K with an open-source toolflow.</li>
+  <li>Prove the results on real hardware through a PC application, and measure latency, throughput and resource use.</li>
+</ol>
+
+<h2>2. Background</h2>
+<p><b>Systolic array.</b> A grid of identical PEs where data moves one PE per clock and each PE does one multiply-accumulate. This design is weight-stationary: PE(r, c) keeps one packed weight byte for the whole run, activations flow left to right, and partial sums flow top to bottom.</p>
+<p><b>ADiP chunk multiplication.</b> An 8-bit activation x is split into four 2-bit chunks, x = 64·x3 + 16·x2 + 4·x1 + x0. The weight byte is split the same way into w3..w0. Sixteen 2b x 2b multipliers form every product x<sub>i</sub>·w<sub>j</sub>, grouped into four lanes:</p>
+<div class="formula">L<sub>j</sub> = &Sigma;<sub>i=0..3</sub> x<sub>i</sub> · w<sub>j</sub> · 4<sup>i</sup> = x · w<sub>j</sub></div>
+<p><b>Shared shifter.</b> The lanes are not combined inside the PE. One shared shifter per column combines them according to the mode, which is what makes the precision adaptive:</p>
+<table>
+  <tr><th>Mode</th><th>Weights per byte</th><th>Weight range (unsigned / signed)</th><th>Shifter output per column</th></tr>
+  <tr><td>8b x 8b</td><td>1</td><td>0..255 / -128..127</td><td>L0 + 4·L1 + 16·L2 + 64·L3 (1 result)</td></tr>
+  <tr><td>8b x 4b</td><td>2</td><td>0..15 / -8..7</td><td>L0 + 4·L1 and L2 + 4·L3 (2 results)</td></tr>
+  <tr><td>8b x 2b</td><td>4</td><td>0..3 / -2..1</td><td>L0, L1, L2, L3 (4 results)</td></tr>
+</table>
+<p>The 4 x 4 array therefore produces a 4 x 4, 4 x 8 or 4 x 16 result matrix C from the same 16 PEs. Difference from the ADiP paper: this design uses a weight-stationary skewed array, not ADiP's diagonal interconnect.</p>
+
+<h2>3. System architecture</h2>
+<figure>
+<svg viewBox="0 60 760 320" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif" font-size="13">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8a919c"/></marker></defs>
+  <g fill="none" stroke="#8a919c" stroke-width="1.25">
+    <path d="M174 110H198" marker-end="url(#ar)"/><path d="M358 110H382" marker-end="url(#ar)"/><path d="M542 110H566" marker-end="url(#ar)"/>
+    <path d="M651 146V264" marker-end="url(#ar)"/><path d="M566 300H542" marker-end="url(#ar)"/><path d="M382 300H358" marker-end="url(#ar)"/>
+    <path d="M198 300H174" marker-end="url(#ar)"/><path d="M294 204H310" marker-end="url(#ar)"/>
+  </g>
+  <g fill="none" stroke="#8a919c" stroke-width="1.25" stroke-dasharray="4 4">
+    <path d="M462 176V146" marker-end="url(#ar)"/><path d="M540 204H600V146" marker-end="url(#ar)"/><path d="M462 232V264" marker-end="url(#ar)"/>
+  </g>
+  <g stroke="#8a919c" stroke-width="1.25" fill="none">
+    <rect x="24" y="74" width="150" height="262" rx="8"/><rect x="198" y="74" width="160" height="72" rx="8"/><rect x="382" y="74" width="160" height="72" rx="8"/>
+    <rect x="198" y="176" width="96" height="56" rx="8"/><rect x="310" y="176" width="230" height="56" rx="8"/>
+    <rect x="566" y="264" width="170" height="72" rx="8"/><rect x="382" y="264" width="160" height="72" rx="8"/><rect x="198" y="264" width="160" height="72" rx="8"/>
+  </g>
+  <rect x="566" y="74" width="170" height="72" rx="8" fill="#2f6fd0" fill-opacity="0.12" stroke="#2f6fd0" stroke-width="2"/>
+  <g text-anchor="middle" font-weight="600" fill="#1f2328">
+    <text x="99" y="98">PC app (laptop)</text><text x="278" y="98">UART in + decoder</text><text x="462" y="98">A and W memories</text><text x="651" y="98">4x4 systolic array</text>
+    <text x="246" y="200">Buttons</text><text x="425" y="200">Controller FSM</text>
+    <text x="651" y="288">Shared shifters</text><text x="462" y="288">Output memory</text><text x="278" y="288">UART report + TX</text>
+  </g>
+  <g font-size="11.5" fill="#5f6368">
+    <text x="38" y="124">picks mode and sign</text><text x="38" y="142">sends A and B</text><text x="38" y="160">checks every C</text><text x="38" y="178">tiling, animation</text>
+  </g>
+  <g font-size="11.5" fill="#5f6368" text-anchor="middle">
+    <text x="278" y="116">commands M I U A W S</text><text x="278" y="132">115200 baud, 8N1</text>
+    <text x="462" y="116">A: skewed feeder</text><text x="462" y="132">W: 16 packed bytes</text>
+    <text x="651" y="116" fill="#1f2328">16 PEs, 2-bit chunks</text><text x="651" y="132" fill="#1f2328">A right, sums down</text>
+    <text x="246" y="218">start, mode</text><text x="425" y="218">LOAD 16, COMPUTE 11, STORE 1</text>
+    <text x="651" y="306">one per column</text><text x="651" y="322">combine lanes by mode</text>
+    <text x="462" y="306">de-skews the results</text><text x="462" y="322">C: 19-bit signed</text>
+    <text x="278" y="306">A, B, C, LAT as text</text><text x="278" y="322">bin2bcd, sign</text>
+  </g>
+  <text x="24" y="366" font-size="11.5" fill="#5f6368">Solid arrows: data. Dashed: control from the FSM. LEDs show DONE, BUSY and the mode.</text>
+</svg>
+<figcaption>Figure 1. Top level (adip_top.v): matrices loop from the PC through the 4 x 4 array and back.</figcaption>
+</figure>
+<p>In each run the PC loads A and the packed weights over UART and sends start. The FSM then loads the 16 weights into the PEs (16 cycles) and streams A through the array (11 cycles). The shifters and the output memory assemble C, and the report sends A, B, C and the latency back as decimal text. The two buttons can also select the mode and start a run without a PC.</p>
+
+<h2>4. RTL design</h2>
+<p>The design is 17 Verilog files in <code>rtl/</code>, parameterised by N (array size, a power of two; N = 4 on this board).</p>
+<table>
+  <tr><th>Module</th><th>Role</th><th>Key widths / timing</th></tr>
+  <tr><td><code>multiplier_2bit</code></td><td>2b x 2b multiplier; each operand optionally a signed top chunk</td><td>5-bit signed product, -6..9</td></tr>
+  <tr><td><code>reconfigurable_multiplier</code></td><td>16 x <code>multiplier_2bit</code> in 4 lanes</td><td>4 lanes x 11-bit signed</td></tr>
+  <tr><td><code>accumulator</code></td><td>psum_out &lt;= psum_in + lane product (registered)</td><td>13-bit (PSUM_W)</td></tr>
+  <tr><td><code>adip_pe</code></td><td>stationary weight register, activation register, multiplier, 4 accumulators</td><td>8-bit weight, 4 x 13-bit psums</td></tr>
+  <tr><td><code>systolic_array</code></td><td>N x N PE grid, activations right, psums down</td><td>4 lanes per column out</td></tr>
+  <tr><td><code>shared_shifter</code></td><td>one per column; combines lanes by mode</td><td>4 slots x 19-bit (OUT_W)</td></tr>
+  <tr><td><code>adip_controller</code></td><td>FSM IDLE → LOAD → COMPUTE → STORE → DONE, latency counter</td><td>16 + 11 + 1 = 28 cycles</td></tr>
+  <tr><td><code>weight_memory</code></td><td>N x N packed weight bytes</td><td>async read</td></tr>
+  <tr><td><code>input_memory</code></td><td>matrix A + skewed feeder: row r gets A[cnt-r][r]</td><td>8-bit</td></tr>
+  <tr><td><code>output_memory</code></td><td>de-skewing capture: column c writes row m = cnt-N-c</td><td>4 x 19-bit slots per word</td></tr>
+  <tr><td><code>uart_rx</code>, <code>uart_tx</code></td><td>115200 8N1 serial</td><td>27 MHz / 115200</td></tr>
+  <tr><td><code>uart_cmd</code></td><td>PC command decoder (M, I/U, A, W, S); drops a stalled command after ~50 ms</td><td></td></tr>
+  <tr><td><code>uart_report</code> + <code>bin2bcd</code></td><td>prints A, B, C in decimal (with sign) and LAT</td><td></td></tr>
+  <tr><td><code>button_filter</code></td><td>debounce for the start and mode buttons</td><td></td></tr>
+  <tr><td><code>adip_top</code></td><td>top level: mode/sign latching, signed-chunk flags, LEDs</td><td>6 LEDs, 2 buttons</td></tr>
+</table>
+<p><b>Controller timing.</b> LOAD writes one weight per cycle (N x N = 16 cycles) while the datapath is cleared. COMPUTE runs 3N - 1 = 11 cycles: activations enter skewed, and each column captures its finished rows through its shifter. STORE takes one cycle. Latency = N x N + 3N = 28 cycles for N = 4, the same in every mode.</p>
+<p><b>Signed-chunk flags</b> (<code>adip_top.v</code>): only the top chunk of each number is signed. For weights this depends on the mode: w3 in 8b x 8b, w3 and w1 in 8b x 4b, every chunk in 8b x 2b.</p>
+
+<h2>5. Signed INT8 support</h2>
+<p>Signed mode reuses the same multipliers: in two's complement only the top 2-bit chunk carries the sign, so each 2-bit multiplier gets a "signed chunk" flag. A flagged chunk reads -2..1 instead of 0..3. Everything after the multipliers is ordinary two's complement addition. The PC switches modes with <code>I</code> (signed) and <code>U</code> (unsigned).</p>
+<p><b>Worked example, 3 x (-69) in 8b x 8b mode.</b> x = 3 = 00 00 00 11 and w = -69 = 10 11 10 11, so the weight chunks w3..w0 are -2 (signed top), 3, 2, 3.</p>
+<table>
+  <tr><th>Lane</th><th class="n">x · w<sub>j</sub></th><th class="n">Shift</th><th class="n">Contribution</th></tr>
+  <tr><td>w0 = 3</td><td class="n">9</td><td class="n">x1</td><td class="n">9</td></tr>
+  <tr><td>w1 = 2</td><td class="n">6</td><td class="n">x4</td><td class="n">24</td></tr>
+  <tr><td>w2 = 3</td><td class="n">9</td><td class="n">x16</td><td class="n">144</td></tr>
+  <tr><td>w3 = -2</td><td class="n">-6</td><td class="n">x64</td><td class="n">-384</td></tr>
+  <tr><th>Sum</th><th></th><th></th><th class="n">-207 = 3 x (-69)</th></tr>
+</table>
+<p>Signed results need one extra bit: lane products grew from 10 to 11 bits, the accumulator from 12 to 13 and the result from 18 to 19. The extremes for N = 4, (-128)(-128) x 4 = +65536 and 127 x (-128) x 4 = -65024, are covered by the top-level testbench.</p>
+<table>
+  <tr><th>Design</th><th>LUT4</th><th>FF</th><th>Fmax (post-route)</th></tr>
+  <tr><td>Unsigned only</td><td>6064 / 8640 (70%)</td><td>1960 / 6480 (30%)</td><td>59.4 MHz</td></tr>
+  <tr><td>Unsigned + signed INT8</td><td>8230 / 8640 (95%)</td><td>2059 / 6480 (31%)</td><td>69.6 MHz</td></tr>
+</table>
+<p>Signed support cost about 2,200 LUTs. The UART report prints a minus sign and widens each column by one character.</p>
+
+<h2>6. Verification</h2>
+<p>Every testbench passes in Icarus Verilog, unsigned and signed, and the hardware results match the same Python reference.</p>
+<table>
+  <tr><th>Testbench</th><th>What it checks</th><th>Result</th></tr>
+  <tr><td><code>tb_multiplier</code></td><td>2b x 2b multiplier and the 4-lane reconfigurable multiplier</td><td>PASS</td></tr>
+  <tr><td><code>tb_pe</code></td><td>one PE: weight load, activation pass-through, lane accumulation</td><td>PASS</td></tr>
+  <tr><td><code>tb_systolic_array</code></td><td>4 x 4 array dataflow and column partial sums</td><td>PASS</td></tr>
+  <tr><td><code>tb_wave</code></td><td>full design, 6 runs (3 modes x unsigned/signed), result memory vs. computed A x B, latency</td><td>ALL PASS, 28 cycles each</td></tr>
+  <tr><td><code>tb_adip_top</code></td><td>phases 0-9: buttons, PC commands over UART RX, signed default and extreme data; every character of the UART report compared with the expected text</td><td>ALL PASS</td></tr>
+</table>
+<p><b>Golden model.</b> <code>sim/golden_model.py</code> computes C with a plain matrix multiply and with a cycle-accurate copy of the RTL (2-bit chunks, skew, column accumulation, shared shifter). It also prints the exact UART text the board must send.</p>
+<p><b>GTKWave.</b> <code>sim.bat wave</code> runs <code>tb_wave</code> and opens <code>sim/out/tb_wave.vcd</code> with the layout <code>sim/tb_wave.gtkw</code>. Recording starts just before the first run (8b x 8b, unsigned, default data), so the view opens on it. Readable probe signals were added to the testbench only; the RTL is unchanged.</p>
+<table>
+  <tr><th>Group</th><th>Signals</th><th>What to look for</th></tr>
+  <tr><td>Control</td><td><code>mode_q</code>, <code>sign_q</code>, <code>u_ctrl.state</code> (shown as IDLE/LOAD/COMPUTE/STORE/DONE), <code>cnt</code>, <code>busy</code>, <code>done</code>, <code>lat</code></td><td>LOAD at 15188.5 ns, COMPUTE at 15780.5 ns, DONE at 16224.5 ns; <code>lat</code> = 28</td></tr>
+  <tr><td>LOAD</td><td><code>w_load_en</code>, <code>r_cnt</code>, <code>c_cnt</code>, <code>w_data</code></td><td>16 weight bytes, one per cycle (41, 114, 187, 4, ...)</td></tr>
+  <tr><td>COMPUTE</td><td><code>a_in_row0..3</code></td><td>A enters row r one cycle after row r-1 (the skew)</td></tr>
+  <tr><td>Results</td><td><code>c_write_colX</code>, <code>c_row_colX</code>, <code>c_colX_slot0</code> (signed decimal)</td><td>C row 0 = 1130, 1860, 798, 760, written one cycle apart per column (de-skew)</td></tr>
+  <tr><td>Output</td><td><code>rpt_busy</code>, <code>uart_tx</code>, <code>led</code></td><td>UART report starts after DONE</td></tr>
+</table>
+
+<h2>7. FPGA implementation</h2>
+<p>The design fits the GW1NR-9 at 95% of its LUTs and meets timing with a 2.6x margin (69.6 MHz achieved, 27 MHz board clock). The whole flow is open source (OSS CAD Suite) and is scripted in <code>build.bat</code> and <code>flash.bat</code>.</p>
+<ol>
+  <li><b>Synthesis:</b> Yosys 0.69, <code>synth_gowin -noalu</code> with plain 4-input LUT mapping (<code>abc -lut 4</code>). The default abc9 step crashes on the Windows build, and the default ALU / wide-LUT mapping needs about 104% of the LUTs.</li>
+  <li><b>Place and route:</b> nextpnr-himbaechel, device GW1NR-LV9QN88PC6/I5, family GW1N-9C, 27 MHz constraint.</li>
+  <li><b>Bitstream:</b> gowin_pack produces <code>build/adip.fs</code>.</li>
+  <li><b>Programming:</b> openFPGALoader over the board's JTAG (WinUSB driver on USB interface 0), to SRAM for testing or to flash so the design starts at power-up.</li>
+</ol>
+<table>
+  <tr><th>Resource</th><th>Used / available</th><th>Utilisation</th></tr>
+  <tr><td>LUT4</td><td>8230 / 8640</td><td>95%</td></tr>
+  <tr><td>Flip-flops</td><td>2059 / 6480</td><td>31%</td></tr>
+  <tr><td>I/O pins</td><td>11 / 276</td><td>3%</td></tr>
+  <tr><td>Fmax (post-route)</td><td>69.6 MHz</td><td>constraint 27 MHz, PASS</td></tr>
+</table>
+<p>The critical path runs through the UART report's sign handling and binary-to-BCD conversion, not through the array. An 8 x 8 array (64 PEs) does not fit this device.</p>
+<table>
+  <tr><th>Signal</th><th>Pin</th><th>Function</th></tr>
+  <tr><td>clk</td><td>52</td><td>27 MHz oscillator</td></tr>
+  <tr><td>uart_tx / uart_rx</td><td>17 / 18</td><td>USB-UART to PC, 115200 8N1</td></tr>
+  <tr><td>btn_start_n / btn_mode_n</td><td>4 / 3</td><td>start a run / cycle precision mode</td></tr>
+  <tr><td>led[0..5]</td><td>10, 11, 13, 14, 15, 16</td><td>DONE, BUSY, 8x8, 8x4, 8x2, UART printing (active low)</td></tr>
+</table>
+
+<h2>8. Hardware results</h2>
+<p>On the real Tang Nano 9K, all six cases (three precisions, unsigned and signed) return a UART report identical to the golden model, and every run takes 28 cycles. Dropping the weight precision from 8 to 2 bits quadruples throughput on the same 16 PEs.</p>
+<p><b>Bring-up.</b> The board enumerates as USB 0403:6010. Interface 0 (JTAG) uses the WinUSB driver for openFPGALoader; interface 1 is the serial port (COM4). The bitstream was loaded to SRAM, tested, then written to flash (CRC check passed), so the design runs at every power-up.</p>
+<table>
+  <tr><th>Mode</th><th>Results per run</th><th class="n">MAC per cycle</th><th class="n">MMAC/s at 27 MHz</th><th class="n">MOPS at 27 MHz</th></tr>
+  <tr><td>8b x 8b</td><td>64 (C is 4 x 4)</td><td class="n">2.29</td><td class="n">61.7</td><td class="n">123.4</td></tr>
+  <tr><td>8b x 4b</td><td>128 (C is 4 x 8)</td><td class="n">4.57</td><td class="n">123.4</td><td class="n">246.9</td></tr>
+  <tr><td>8b x 2b</td><td>256 (C is 4 x 16)</td><td class="n">9.14</td><td class="n">246.9</td><td class="n">493.7</td></tr>
+</table>
+<p>Latency is 28 cycles = 1.04 µs at 27 MHz in every mode; the 16 LOAD cycles are included, so a streaming design with preloaded weights would do better. Throughput counts useful multiply-accumulates per run divided by 28 cycles; MOPS counts the multiply and the add separately.</p>
+<p><b>Default data check (8b x 8b, unsigned).</b> C row 0 = 1130, 1860, 798, 760, the same on the board, in GTKWave, in the golden model and in the PC app. The LEDs show DONE plus the selected mode after each run.</p>
+
+<h2>9. PC application, tiling and animation</h2>
+<p>A Python/Tkinter app (<code>pc/adip_gui.py</code>) drives the board over USB-UART: the user picks the precision and signedness, types or randomises A and B, and presses Run on FPGA. A result window shows C, latency and throughput, and marks every value green when it equals the PC's own calculation. The app finds and connects to the board automatically when it is plugged in.</p>
+<table>
+  <tr><th>Command (PC to FPGA)</th><th>Meaning</th></tr>
+  <tr><td><code>M</code> m, or <code>0</code> / <code>1</code> / <code>2</code></td><td>precision mode 8x8 / 8x4 / 8x2</td></tr>
+  <tr><td><code>I</code> / <code>U</code></td><td>signed INT8 / unsigned</td></tr>
+  <tr><td><code>A</code> + 16 bytes</td><td>matrix A, row-major</td></tr>
+  <tr><td><code>W</code> + 16 bytes</td><td>packed weights, one byte per PE</td></tr>
+  <tr><td><code>S</code></td><td>start; the FPGA replies with the A, B, C text report and LAT</td></tr>
+</table>
+<p><b>Tiling to 8 x 8 and 16 x 16.</b> The array stays 4 x 4. The app cuts A into 4 x 4 tiles and B into 4 x 4, 4 x 8 or 4 x 16 tiles (by mode), runs each tile pair on the FPGA, and adds the partial tiles along K. No RTL change was needed. All 12 cases below were verified on the board with random data, unsigned and signed.</p>
+<table>
+  <tr><th>Matrix size</th><th>Mode</th><th class="n">FPGA runs</th><th class="n">FPGA cycles</th><th class="n">MAC per cycle</th><th class="n">Total time incl. UART</th></tr>
+  <tr><td>16 x 16</td><td>8b x 8b</td><td class="n">64</td><td class="n">1792</td><td class="n">2.29</td><td class="n">10.5-10.6 s</td></tr>
+  <tr><td>16 x 16</td><td>8b x 4b</td><td class="n">32</td><td class="n">896</td><td class="n">4.57</td><td class="n">5.3-6.8 s</td></tr>
+  <tr><td>16 x 16</td><td>8b x 2b</td><td class="n">16</td><td class="n">448</td><td class="n">9.14</td><td class="n">3.4 s</td></tr>
+  <tr><td>8 x 8</td><td>8b x 8b</td><td class="n">8</td><td class="n">224</td><td class="n">2.29</td><td class="n">1.3 s</td></tr>
+  <tr><td>8 x 8</td><td>8b x 4b</td><td class="n">4</td><td class="n">112</td><td class="n">4.57</td><td class="n">0.7-0.9 s</td></tr>
+  <tr><td>8 x 8</td><td>8b x 2b</td><td class="n">4</td><td class="n">112</td><td class="n">4.57</td><td class="n">0.9 s</td></tr>
+</table>
+<p>The array's compute for 16 x 16 at 8 bits is only 1792 cycles (66 µs); the 115200-baud text report is the bottleneck. In 8 x 8 / 8b x 2b, half of each B tile is zero padding, so throughput stays at 4.57.</p>
+<p><b>Cycle-by-cycle animation.</b> The app replays any run as the hardware executes it, using a Python copy of the RTL dataflow (<code>pc/adip_core.py</code>, <code>cycle_trace</code>). It shows the 16 LOAD cycles, the skewed activations moving right, partial sums moving down, the shared shifters and C filling in. Clicking a PE shows its 2-bit chunks, the 16 two-bit products, the four lane sums and the shift-and-add for that cycle. At the end it checks the result against A x B and against the FPGA's answer.</p>
+<figure>
+<img src="fig_animation.png" alt="Animation window at cycle 20">
+<figcaption>Figure 2. Animation at cycle 20 (COMPUTE, cnt = 3), 8b x 8b with default data. Colours mark rows of A and C; the panel shows PE(1,1): x = 6, w = 150, lanes 12, 6, 6, 12, shifter 900 = 6 x 150, partial sum 570 + 900 = 1470.</figcaption>
+</figure>
+
+<h2>10. Conclusion and future work</h2>
+<p>All five objectives were met: one 4 x 4 array of 2-bit-chunk PEs computes 8b x 8b, 8b x 4b and 8b x 2b products, unsigned and signed INT8, verified in simulation and bit-exact on the Tang Nano 9K. Throughput scales 1x : 2x : 4x as weight precision halves, at a constant 28-cycle latency.</p>
+<p><b>Limitations</b></p>
+<ul>
+  <li>The array is 4 x 4 because the GW1NR-9 is 95% full; an 8 x 8 array does not fit.</li>
+  <li>The 115200-baud text report dominates end-to-end time, especially for tiled 16 x 16 products.</li>
+  <li>The dataflow is a skewed weight-stationary array, not ADiP's diagonal interconnect.</li>
+  <li>In tiling, the partial tiles along K are added on the PC, not on the FPGA.</li>
+</ul>
+<p><b>Future work</b></p>
+<ul>
+  <li>Port to the Altium NanoBoard 3000XN (Xilinx Spartan-3AN XC3S1400AN, about 2.6x the logic) using Xilinx ISE and the college lab's Altium Designer, with results shown on its LCD or a VGA monitor.</li>
+  <li>Accumulate tiles on the FPGA and send results in binary instead of text to remove the UART bottleneck.</li>
+  <li>Overlap weight loading with computation, and use on-chip block RAM for larger matrices.</li>
+</ul>
+
+<h2>Appendix: how to reproduce</h2>
+<p>Run these from the OSS CAD Suite terminal in the project folder.</p>
+<table>
+  <tr><th>Task</th><th>Command</th></tr>
+  <tr><td>All testbenches</td><td><code>sim.bat</code></td></tr>
+  <tr><td>Waveform in GTKWave</td><td><code>sim.bat wave</code></td></tr>
+  <tr><td>Expected outputs</td><td><code>python sim/golden_model.py 4</code> (add <code>signed</code> for INT8)</td></tr>
+  <tr><td>Synthesis, place and route, bitstream</td><td><code>build.bat</code></td></tr>
+  <tr><td>Load to SRAM / write to flash</td><td><code>flash.bat</code> / <code>flash.bat flash</code></td></tr>
+  <tr><td>PC app</td><td><code>run_gui.bat</code> (first time), then <code>ADiP_App.vbs</code></td></tr>
+  <tr><td>App logic self-test</td><td><code>python pc/adip_core.py</code></td></tr>
+</table>
+<table>
+  <tr><th>Folder</th><th>Contents</th></tr>
+  <tr><td><code>rtl/</code></td><td>17 Verilog modules (section 4)</td></tr>
+  <tr><td><code>tb/</code></td><td>5 testbenches (section 6)</td></tr>
+  <tr><td><code>sim/</code></td><td>golden model, GTKWave layout and name filters</td></tr>
+  <tr><td><code>constraints/</code></td><td><code>tang_nano9k.cst</code> pin file</td></tr>
+  <tr><td><code>pc/</code></td><td>GUI, protocol and tiling (<code>adip_core.py</code>), animation (<code>adip_anim.py</code>), auto-start watcher</td></tr>
+  <tr><td><code>build/</code></td><td>bitstream <code>adip.fs</code>, Yosys and nextpnr logs</td></tr>
+</table>
+
+</body>
+</html>

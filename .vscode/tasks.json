@@ -1,0 +1,10 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "Simulate all",       "type": "shell", "command": ".\\sim.bat",        "group": "test" },
+    { "label": "Waveform (GTKWave)", "type": "shell", "command": ".\\sim.bat wave",   "group": "test" },
+    { "label": "Build bitstream",    "type": "shell", "command": ".\\build.bat",      "group": "build" },
+    { "label": "Program (SRAM)",     "type": "shell", "command": ".\\flash.bat" },
+    { "label": "Program (flash)",    "type": "shell", "command": ".\\flash.bat flash" }
+  ]
+}

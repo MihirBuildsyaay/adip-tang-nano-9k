@@ -1,0 +1,82 @@
+[*] ADiP Tang Nano 9K - tb_wave result view
+[*] open:  sim.bat wave     (or: gtkwave sim\out\tb_wave.vcd sim\tb_wave.gtkw  from the project folder)
+[*] zoomed on the first run (8x8 unsigned, default data): LOAD 16 cycles -> COMPUTE 11 -> STORE 1 -> DONE
+[*] C row 0 appears on the c_colX_slot0 traces while c_write_colX is high: 1130 1860 798 760
+[dumpfile] "sim/out/tb_wave.vcd"
+[timestart] 14855500
+[size] 1500 900
+[pos] 40 40
+*-18.000000 15780500 15188500 16224500 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[sst_width] 240
+[signals_width] 230
+[sst_expanded] 1
+[sst_vpaned_height] 300
+@28
+tb_wave.clk
+@200
+-Control (state 0 IDLE 1 LOAD 2 COMPUTE 3 STORE 4 DONE)
+@2024
+^1 sim/mode_names.txt
+tb_wave.dut.mode_q[1:0]
+@28
+tb_wave.dut.sign_q
+@2024
+^1 sim/ctrl_state.txt
+tb_wave.dut.u_ctrl.state[2:0]
+@24
+tb_wave.dut.u_ctrl.cnt[3:0]
+@28
+tb_wave.dut.busy
+tb_wave.dut.done
+@24
+tb_wave.dut.u_ctrl.lat[11:0]
+@200
+-LOAD: one stationary weight per cycle into PE(r,c)
+@28
+tb_wave.dut.u_ctrl.w_load_en
+@24
+tb_wave.dut.u_ctrl.r_cnt[1:0]
+tb_wave.dut.u_ctrl.c_cnt[1:0]
+tb_wave.dut.w_data[7:0]
+@200
+-COMPUTE: activations enter each row skewed
+@24
+tb_wave.a_in_row0[7:0]
+tb_wave.a_in_row1[7:0]
+tb_wave.a_in_row2[7:0]
+tb_wave.a_in_row3[7:0]
+@200
+-RESULTS: shared shifter output written into C
+@28
+tb_wave.c_write_col0
+@24
+tb_wave.c_row_col0[1:0]
+@424
+tb_wave.c_col0_slot0[18:0]
+@28
+tb_wave.c_write_col1
+@24
+tb_wave.c_row_col1[1:0]
+@424
+tb_wave.c_col1_slot0[18:0]
+@28
+tb_wave.c_write_col2
+@24
+tb_wave.c_row_col2[1:0]
+@424
+tb_wave.c_col2_slot0[18:0]
+@28
+tb_wave.c_write_col3
+@24
+tb_wave.c_row_col3[1:0]
+@424
+tb_wave.c_col3_slot0[18:0]
+@200
+-UART report to the PC + LEDs
+@28
+tb_wave.dut.rpt_busy
+tb_wave.uart_tx
+@22
+tb_wave.led[5:0]
+[pattern_trace] 1
+[pattern_trace] 0

@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Simulation outputs (regenerate with sim.bat)
+sim/out/
+*.vcd
+*.vvp
+
+# Synthesis / place-and-route netlists (regenerate with build.bat)
+# The bitstream build/adip.fs and the logs are kept.
+build/*.json
+
+# Per-machine app state (written by the GUI on first connect)
+pc/board_id.json
+
+# Runtime state of the auto-start watcher
+pc/.watcher.pid
